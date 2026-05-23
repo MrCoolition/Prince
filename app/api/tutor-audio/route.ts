@@ -1,1 +1,3 @@
-export { GET, POST, runtime } from '../voice/route';
+export const runtime = 'nodejs';
+
+export { GET, POST } from '../voice/route';
