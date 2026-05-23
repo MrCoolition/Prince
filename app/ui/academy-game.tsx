@@ -242,7 +242,7 @@ export function AcademyGame() {
         tutorId: activeChamber.tutorId,
         text: `${activeChamber.tutor}. ${trial.story} ${trial.prompt}`
       });
-      const audio = new Audio(`/api/voice?${params.toString()}`);
+      const audio = new Audio(`/api/tutor-audio?${params.toString()}`);
       audio.preload = 'auto';
       voiceRef.current = audio;
       audio.onplaying = () => setVoiceState('speaking');
