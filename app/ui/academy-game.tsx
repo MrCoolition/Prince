@@ -35,6 +35,7 @@ import {
   type Trial
 } from '@/lib/academy';
 import { judgeTrialAnswer, type TutorReward } from '@/lib/tutor-judgment';
+import { ensureTutorMemory, tutorProfiles, type TutorMemory } from '@/lib/tutor-profiles';
 
 type Progress = {
   tier: number;
@@ -43,12 +44,13 @@ type Progress = {
   completed: string[];
   relics: string[];
   virtues: Record<string, number>;
+  tutors: Partial<Record<ChamberId, TutorMemory>>;
   log: string[];
 };
 
 type Reward = TutorReward;
 
-const storageKey = 'prince-academy.next.progress.v2';
+const storageKey = 'prince-academy.next.progress.v3';
 
 const defaultProgress: Progress = {
   tier: 1,
@@ -57,6 +59,7 @@ const defaultProgress: Progress = {
   completed: [],
   relics: [],
   virtues: {},
+  tutors: {},
   log: ['Entered the citadel']
 };
 
@@ -75,6 +78,8 @@ export function AcademyGame() {
 
   const activeChamber = chamberById(activeId);
   const activeIndex = chamberIndex(activeId);
+  const tutorProfile = tutorProfiles[activeId];
+  const tutorMemory = ensureTutorMemory(progress.tutors[activeId]);
   const trial = useMemo(() => buildTrial(activeId, progress.tier), [activeId, progress.tier]);
   const currentKey = `${activeId}:${progress.tier}`;
   const locked = activeIndex > progress.step;
@@ -86,7 +91,16 @@ export function AcademyGame() {
     try {
       const saved = window.localStorage.getItem(storageKey);
       if (saved) {
-        setProgress({ ...defaultProgress, ...JSON.parse(saved) });
+        const parsed = JSON.parse(saved) as Partial<Progress>;
+        setProgress({
+          ...defaultProgress,
+          ...parsed,
+          completed: parsed.completed ?? [],
+          relics: parsed.relics ?? [],
+          virtues: parsed.virtues ?? {},
+          tutors: parsed.tutors ?? {},
+          log: parsed.log ?? defaultProgress.log
+        });
       }
     } catch {
       setProgress(defaultProgress);
@@ -124,11 +138,12 @@ export function AcademyGame() {
       return;
     }
 
-    const localEvaluation = evaluateTrial(trial, answer, chosen);
+    const localEvaluation = evaluateTrial(trial, answer, chosen, tutorMemory);
     setReward(localEvaluation);
     setHint(localEvaluation.line);
 
     if (!localEvaluation.mastered) {
+      setProgress((current) => recordTutorMoment(current, localEvaluation, false));
       return;
     }
 
@@ -141,6 +156,7 @@ export function AcademyGame() {
     setHint(evaluation.line);
 
     if (!evaluation.mastered) {
+      setProgress((current) => recordTutorMoment(current, evaluation, false));
       return;
     }
 
@@ -149,14 +165,14 @@ export function AcademyGame() {
         ? current.completed
         : [...current.completed, currentKey];
       const virtueScore = Math.min(100, (current.virtues[trial.virtue] ?? 0) + 16);
-      return {
+      return recordTutorMoment({
         ...current,
         xp: current.xp + evaluation.score,
         completed: nextCompleted,
         relics: current.relics.includes(evaluation.relic) ? current.relics : [...current.relics, evaluation.relic],
         virtues: { ...current.virtues, [trial.virtue]: virtueScore },
         log: [`${activeChamber.chamber}: ${evaluation.relic}`, ...current.log].slice(0, 6)
-      };
+      }, evaluation, true);
     });
 
     void saveProgressEvent(evaluation);
@@ -202,7 +218,15 @@ export function AcademyGame() {
           answer: rawAnswer,
           artifacts,
           reward: baseReward,
-          tier: progress.tier
+          tier: progress.tier,
+          tutorProfile,
+          tutorMemory,
+          progressSummary: {
+            completed: progress.completed.length,
+            corrections: tutorMemory.corrections,
+            seals: tutorMemory.seals,
+            virtue: progress.virtues[baseTrial.virtue] ?? 0
+          }
         })
       });
       if (!response.ok) {
@@ -231,6 +255,29 @@ export function AcademyGame() {
     } catch {
       // The prince can still play from local progress.
     }
+  }
+
+  function recordTutorMoment(current: Progress, baseReward: Reward, mastered: boolean): Progress {
+    const previous = ensureTutorMemory(current.tutors[activeId]);
+    const nextMemory: TutorMemory = {
+      meetings: previous.meetings + 1,
+      seals: previous.seals + (mastered ? 1 : 0),
+      corrections: previous.corrections + (mastered ? 0 : 1),
+      trust: Math.min(100, previous.trust + (mastered ? 14 : 4)),
+      streak: mastered ? previous.streak + 1 : 0,
+      lastNeed: mastered ? previous.lastNeed : baseReward.title,
+      lastWin: mastered ? baseReward.relic : previous.lastWin,
+      lastAnswer: (answer.trim() || chosen.join(', ') || 'pointing practice').slice(0, 160),
+      lastGuidance: baseReward.next
+    };
+
+    return {
+      ...current,
+      tutors: {
+        ...current.tutors,
+        [activeId]: nextMemory
+      }
+    };
   }
 
   async function hearTutor() {
@@ -352,6 +399,24 @@ export function AcademyGame() {
               {voiceState === 'loading' || voiceState === 'speaking' ? <Pause size={18} /> : <Volume2 size={18} />}
               {voiceLabel(voiceState)}
             </button>
+          </div>
+
+          <div className="teacher-panel" aria-label={`${activeChamber.tutor} tutor memory`}>
+            <section>
+              <span>Teacher&apos;s eye</span>
+              <strong>{tutorProfile.watches}</strong>
+              <p>{tutorProfile.oath}</p>
+            </section>
+            <section>
+              <span>Relationship</span>
+              <strong>{tutorMemory.meetings} meetings, {tutorMemory.seals} seals</strong>
+              <p>{tutorMemory.corrections ? `Needs care: ${tutorMemory.lastNeed}` : tutorProfile.relation}</p>
+            </section>
+            <section>
+              <span>Next bridge</span>
+              <strong>{tutorMemory.streak ? `${tutorMemory.streak} noble step streak` : tutorMemory.lastGuidance}</strong>
+              <p>{tutorMemory.lastWin}</p>
+            </section>
           </div>
 
           <article className="trial-card">
@@ -512,8 +577,8 @@ export function AcademyGame() {
   );
 }
 
-function evaluateTrial(trial: Trial, answer: string, artifacts: string[]): Reward {
-  return judgeTrialAnswer(trial, answer, artifacts);
+function evaluateTrial(trial: Trial, answer: string, artifacts: string[], memory: TutorMemory): Reward {
+  return judgeTrialAnswer(trial, answer, artifacts, { memory });
 }
 
 function rankFor(tier: number, xp: number) {

@@ -1,4 +1,5 @@
 import type { Trial } from './academy';
+import { tutorProfiles, type TutorMemory } from './tutor-profiles';
 
 export type TutorReward = {
   mastered: boolean;
@@ -8,6 +9,11 @@ export type TutorReward = {
   event: string;
   relic: string;
   next: string;
+};
+
+export type TutorJudgmentContext = {
+  memory?: TutorMemory;
+  tier?: number;
 };
 
 const vulgarWords = [
@@ -64,17 +70,26 @@ const chamberSignals: Record<string, string[]> = {
   'garden-laboratory': ['care', 'gentle', 'leaf', 'light', 'look', 'notice', 'plant', 'water']
 };
 
-export function judgeTrialAnswer(trial: Trial, answer: string, artifacts: string[]): TutorReward {
+export function judgeTrialAnswer(
+  trial: Trial,
+  answer: string,
+  artifacts: string[],
+  context: TutorJudgmentContext = {}
+): TutorReward {
   const text = answer.trim();
   const lower = text.toLowerCase();
   const words = text.split(/\s+/).filter(Boolean);
   const selected = artifacts.map((item) => item.toLowerCase());
   const selectedCount = selected.length;
+  const profile = tutorProfiles[trial.chamberId];
+  const memoryNote = context.memory?.corrections
+    ? ` ${profile.name} remembers this has needed practice before.`
+    : '';
 
   if (!words.length && !selectedCount) {
     return correction(
       'Guided Practice',
-      `${tutorFor(trial)} waits kindly. Pick one card, point, act it out, or say one small answer.`,
+      `${profile.name} comes close. ${profile.parentMove}`,
       'Choose one noble move before earning a seal.',
       'Use a card or starter phrase.'
     );
@@ -83,7 +98,7 @@ export function judgeTrialAnswer(trial: Trial, answer: string, artifacts: string
   if (containsAny(lower, vulgarWords)) {
     return correction(
       'Clean Speech',
-      `${tutorFor(trial)} protects the prince's speech. A prince can be upset, but he must use clean words that a wise tutor can honor.`,
+      `${profile.name} protects the prince's speech.${memoryNote} A prince can be upset, but he must use clean words that a wise tutor can honor.`,
       'Try again with one plain, noble sentence.',
       'Replace the rough words with a true, calm answer.'
     );
@@ -92,7 +107,7 @@ export function judgeTrialAnswer(trial: Trial, answer: string, artifacts: string
   if (containsAny(lower, cruelWords)) {
     return correction(
       'Merciful Power',
-      `${tutorFor(trial)} stops the seal. A prince may be angry, but he does not threaten, shame, or frighten people.`,
+      `${profile.name} stops the seal and stays near. ${profile.oath} A prince may be angry, but he does not threaten, shame, or frighten people.`,
       'Choose one protecting or truthful action instead.',
       'Name what happened, then choose a safe action.'
     );
@@ -101,7 +116,7 @@ export function judgeTrialAnswer(trial: Trial, answer: string, artifacts: string
   if (containsAny(lower, avoidanceWords)) {
     return correction(
       'Courage Practice',
-      `${tutorFor(trial)} steadies the prince. A prince may feel afraid, but he does not insult himself or run away from the hard thing.`,
+      `${profile.name} steadies the prince. ${profile.correction} A prince may feel afraid, but he does not insult himself or run away from the hard thing.`,
       'Stand tall, breathe, and try one brave sentence.',
       trial.chamberId === 'training-yard' ? 'Try: I can breathe and try again.' : 'Try one calm, true sentence.'
     );
@@ -115,7 +130,7 @@ export function judgeTrialAnswer(trial: Trial, answer: string, artifacts: string
   if (words.length > 0 && answerSignalCount + starterCount === 0) {
     return correction(
       'Answer the Chamber',
-      `${tutorFor(trial)} listens closely. The answer has words, but it does not answer this tutor's question.`,
+      `${profile.name} listens like a real teacher. The answer has words, but it does not meet the work of the ${profile.chamber} yet.`,
       'Use one card and say one fitting sentence.',
       chamberPrompt(trial)
     );
@@ -124,30 +139,23 @@ export function judgeTrialAnswer(trial: Trial, answer: string, artifacts: string
   if (words.length < 2 && artifactSignalCount === 0) {
     return correction(
       'One Clear Thought',
-      `${tutorFor(trial)} needs one small idea before giving a seal.`,
+      `${profile.name} needs one small idea before giving a seal. ${profile.parentMove}`,
       'Point to a card or say a tiny answer.',
       chamberPrompt(trial)
     );
   }
 
   const score = Math.min(100, 64 + artifactSignalCount * 7 + answerSignalCount * 9 + starterCount * 7 + Math.min(16, words.length * 2));
+  const seen = selected.length ? selected.join(', ') : text.slice(0, 48);
   return {
     mastered: score >= 66,
     score,
     title: trial.virtue,
-    line: `${tutorFor(trial)} nods. That answer fits the lesson and shows a noble step.`,
+    line: `${profile.name} saw ${seen}. ${profile.celebration}`,
     event: `The ${trial.relic} lights on the royal path.`,
     relic: trial.relic,
-    next: 'Carry this virtue into the next chamber.'
+    next: profile.bridge
   };
-}
-
-function tutorFor(trial: Trial) {
-  if (trial.chamberId === 'great-hall') return 'Aurelius';
-  if (trial.chamberId === 'star-tower') return 'Hypatia';
-  if (trial.chamberId === 'scriptorium') return 'Sappho';
-  if (trial.chamberId === 'training-yard') return 'Leonidas';
-  return 'Ibn Sina';
 }
 
 function correction(title: string, line: string, event: string, next: string): TutorReward {

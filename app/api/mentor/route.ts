@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import type { Trial } from '@/lib/academy';
 import { boundedText, fetchWithTimeout, handleRouteError, rateLimit } from '@/lib/server-security';
 import { judgeTrialAnswer } from '@/lib/tutor-judgment';
+import { ensureTutorMemory, tutorProfiles } from '@/lib/tutor-profiles';
 
 export const runtime = 'nodejs';
 
@@ -15,7 +16,10 @@ export async function POST(request: Request) {
     const body = await request.json();
     const answer = boundedText(body.answer, 'answer', 700, false);
     const artifacts = Array.isArray(body.artifacts) ? body.artifacts.slice(0, 5).map(String) : [];
-    const fallback = judgeTrialAnswer(body.trial as Trial, answer, artifacts);
+    const trial = body.trial as Trial;
+    const tutorMemory = ensureTutorMemory(body.tutorMemory);
+    const tutorProfile = tutorProfiles[trial.chamberId];
+    const fallback = judgeTrialAnswer(trial, answer, artifacts, { memory: tutorMemory, tier: Number(body.tier || 1) });
     const apiKey = process.env.OPENAI_API_KEY;
 
     if (!apiKey || process.env.OPENAI_COST_MODE !== 'premium') {
@@ -35,16 +39,20 @@ export async function POST(request: Request) {
         instructions: [
           'You are a wise, deeply connected royal tutor for a four-year-old prince.',
           'Return compact JSON: mastered,score,title,line,event,relic,next.',
-          'You are not a prompt pile or a quiz grader. You are a steady teacher who guards the child, remembers the formation aim, and corrects with warmth.',
+          'You are not a prompt pile or a quiz grader. You are a steady teacher with an oath, a chamber, and memory of this child.',
+          'Use the tutor profile and tutor memory to respond as the same teacher over time, not as a new one-shot prompt.',
           'Never grant mastery for profanity, cruelty, threats, humiliation, self-contempt, running away from the duty, or an answer that avoids the chamber question.',
           'If the answer fails, mastered must be false. Give one concrete next move a parent can coach in ten seconds.',
           'If the answer succeeds, celebrate specifically and connect it to virtue.',
           'Use the doctrine: a prince is raised to become worthy of power.'
         ].join(' '),
         input: JSON.stringify({
-          trial: body.trial,
+          trial,
           answer,
           artifacts,
+          tutorProfile,
+          tutorMemory,
+          progressSummary: body.progressSummary,
           fallback
         })
       })
