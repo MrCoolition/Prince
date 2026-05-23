@@ -4,10 +4,21 @@ import { HttpError, boundedText, fetchWithTimeout, handleRouteError, rateLimit, 
 export const runtime = 'nodejs';
 
 const tutorKeys = new Set(['aurelius', 'hypatia', 'sappho', 'leonidas', 'ibn-sina']);
-const fallbackOrder = ['AURELIUS', 'HYPATIA', 'SAPPHO', 'LEONIDAS', 'IBN_SINA'];
+const assignedVoiceIds: Record<string, string> = {
+  aurelius: 'scOwDtmlUjD3prqpp97I',
+  hypatia: 'LTdCOVuNg0GlsSue75IB',
+  sappho: '8JVbfL6oEdmuxKn5DK2C',
+  leonidas: 'c8GqgOMlDjKmhWVDfhvI',
+  'ibn-sina': 'Umdp1GYPcONfcWXrMinP'
+};
+
+const assignedDefaultVoiceId = 'L0Dsvb3SLTyegXwtm47J';
+const voiceCache = new Map<string, { audio: ArrayBuffer; expiresAt: number }>();
+const voiceCacheTtlMs = envNumber('ELEVENLABS_VOICE_CACHE_TTL_MS', 6 * 60 * 60 * 1000);
+const voiceCacheMaxItems = envNumber('ELEVENLABS_VOICE_CACHE_MAX_ITEMS', 40);
 
 export async function POST(request: Request) {
-  const limited = rateLimit(request, 'voice', 10, 60_000);
+  const limited = rateLimit(request, 'voice', 30, 60_000);
   if (limited) {
     return limited;
   }
@@ -21,9 +32,15 @@ export async function POST(request: Request) {
     }
 
     const apiKey = process.env.ELEVENLABS_API_KEY;
-    const voiceId = await voiceForTutor(apiKey, tutorId);
+    const voiceId = voiceForTutor(tutorId);
     if (!apiKey || !voiceId) {
       return NextResponse.json({ error: 'Tutor voice is resting' }, { status: 412 });
+    }
+
+    const cacheKey = `${tutorId}:${voiceId}:${text}`;
+    const cached = cachedVoice(cacheKey);
+    if (cached) {
+      return audioResponse(cached, 'HIT');
     }
 
     const response = await fetchWithTimeout(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
@@ -46,37 +63,67 @@ export async function POST(request: Request) {
     }, 12_000);
 
     if (!response.ok) {
+      console.warn('[voice] ElevenLabs request failed', { tutorId, status: response.status });
       return NextResponse.json({ error: 'Tutor voice is resting' }, { status: 502 });
     }
 
-    return new NextResponse(await response.arrayBuffer(), {
-      headers: {
-        'content-type': 'audio/mpeg',
-        'cache-control': 'private, max-age=300'
-      }
-    });
+    const audio = await response.arrayBuffer();
+    cacheVoice(cacheKey, audio);
+    return audioResponse(audio, 'MISS');
   } catch (error) {
     return handleRouteError(error);
   }
 }
 
-async function voiceForTutor(apiKey: string | undefined, tutorId: string) {
+function voiceForTutor(tutorId: string) {
   const key = tutorId.toUpperCase().replace(/[^A-Z0-9]/g, '_');
-  const explicit = process.env[`ELEVENLABS_${key}_VOICE_ID`] || process.env.ELEVENLABS_DEFAULT_VOICE_ID;
-  if (explicit || !apiKey) {
-    return explicit || '';
+  return process.env[`ELEVENLABS_${key}_VOICE_ID`]
+    || assignedVoiceIds[tutorId]
+    || process.env.ELEVENLABS_DEFAULT_VOICE_ID
+    || assignedDefaultVoiceId;
+}
+
+function audioResponse(audio: ArrayBuffer, cache: 'HIT' | 'MISS') {
+  return new NextResponse(audio.slice(0), {
+    headers: {
+      'content-type': 'audio/mpeg',
+      'cache-control': 'private, max-age=300',
+      'x-prince-voice-cache': cache
+    }
+  });
+}
+
+function cachedVoice(key: string) {
+  const entry = voiceCache.get(key);
+  if (!entry) {
+    return null;
   }
-
-  const response = await fetchWithTimeout('https://api.elevenlabs.io/v1/voices', {
-    headers: { 'xi-api-key': apiKey }
-  }, 8000);
-
-  if (!response.ok) {
-    return '';
+  if (entry.expiresAt <= Date.now()) {
+    voiceCache.delete(key);
+    return null;
   }
+  return entry.audio;
+}
 
-  const data = await response.json() as { voices?: Array<{ voice_id?: string }> };
-  const voices = Array.isArray(data.voices) ? data.voices.filter((voice) => voice.voice_id) : [];
-  const index = Math.max(0, fallbackOrder.indexOf(key));
-  return voices[index % Math.max(1, voices.length)]?.voice_id || '';
+function cacheVoice(key: string, audio: ArrayBuffer) {
+  if (voiceCacheTtlMs <= 0) {
+    return;
+  }
+  voiceCache.set(key, { audio, expiresAt: Date.now() + voiceCacheTtlMs });
+  if (voiceCache.size <= voiceCacheMaxItems) {
+    return;
+  }
+  for (const [entryKey, entry] of voiceCache) {
+    if (entry.expiresAt <= Date.now() || voiceCache.size > voiceCacheMaxItems) {
+      voiceCache.delete(entryKey);
+    }
+    if (voiceCache.size <= voiceCacheMaxItems) {
+      break;
+    }
+  }
+}
+
+function envNumber(name: string, fallback: number) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) ? value : fallback;
 }
