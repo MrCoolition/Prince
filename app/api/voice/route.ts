@@ -18,15 +18,35 @@ const voiceCacheTtlMs = envNumber('ELEVENLABS_VOICE_CACHE_TTL_MS', 6 * 60 * 60 *
 const voiceCacheMaxItems = envNumber('ELEVENLABS_VOICE_CACHE_MAX_ITEMS', 40);
 
 export async function POST(request: Request) {
+  return voiceRequest(request, async () => {
+    const body = await request.json();
+    return {
+      text: body.text,
+      tutorId: body.tutorId
+    };
+  });
+}
+
+export async function GET(request: Request) {
+  return voiceRequest(request, async () => {
+    const url = new URL(request.url);
+    return {
+      text: url.searchParams.get('text'),
+      tutorId: url.searchParams.get('tutorId')
+    };
+  });
+}
+
+async function voiceRequest(request: Request, readInput: () => Promise<{ text: unknown; tutorId: unknown }>) {
   const limited = rateLimit(request, 'voice', 30, 60_000);
   if (limited) {
     return limited;
   }
 
   try {
-    const body = await request.json();
-    const text = boundedText(body.text, 'text', Number(process.env.ELEVENLABS_MAX_CHARS || 900));
-    const tutorId = safeId(body.tutorId, 'aurelius');
+    const input = await readInput();
+    const text = boundedText(input.text, 'text', Number(process.env.ELEVENLABS_MAX_CHARS || 900));
+    const tutorId = safeId(input.tutorId, 'aurelius');
     if (!tutorKeys.has(tutorId)) {
       throw new HttpError(400, 'Unknown tutor');
     }
@@ -43,7 +63,8 @@ export async function POST(request: Request) {
       return audioResponse(cached, 'HIT');
     }
 
-    const response = await fetchWithTimeout(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+    const outputFormat = encodeURIComponent(process.env.ELEVENLABS_OUTPUT_FORMAT || 'mp3_44100_128');
+    const response = await fetchWithTimeout(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=${outputFormat}`, {
       method: 'POST',
       headers: {
         accept: 'audio/mpeg',

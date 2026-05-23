@@ -75,7 +75,7 @@ export function AcademyGame() {
   const [reward, setReward] = useState<Reward | null>(null);
   const [hint, setHint] = useState(doctrine.question);
   const [musicOn, setMusicOn] = useState(false);
-  const [voiceState, setVoiceState] = useState<'idle' | 'loading' | 'quiet'>('idle');
+  const [voiceState, setVoiceState] = useState<'idle' | 'loading' | 'speaking' | 'quiet'>('idle');
   const musicRef = useRef<HTMLAudioElement | null>(null);
   const voiceRef = useRef<HTMLAudioElement | null>(null);
 
@@ -228,35 +228,29 @@ export function AcademyGame() {
   }
 
   async function hearTutor() {
-    if (voiceState === 'loading') {
+    if (voiceState === 'loading' || voiceState === 'speaking') {
+      voiceRef.current?.pause();
+      voiceRef.current = null;
+      setVoiceState('idle');
       return;
     }
 
     setVoiceState('loading');
     voiceRef.current?.pause();
     try {
-      const response = await fetch('/api/voice', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          tutorId: activeChamber.tutorId,
-          text: `${activeChamber.tutor}. ${trial.story} ${trial.prompt}`
-        })
+      const params = new URLSearchParams({
+        tutorId: activeChamber.tutorId,
+        text: `${activeChamber.tutor}. ${trial.story} ${trial.prompt}`
       });
-      if (!response.ok) {
-        setVoiceState('quiet');
-        return;
-      }
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
+      const audio = new Audio(`/api/voice?${params.toString()}`);
+      audio.preload = 'auto';
       voiceRef.current = audio;
+      audio.onplaying = () => setVoiceState('speaking');
       audio.onended = () => {
-        URL.revokeObjectURL(url);
         setVoiceState('idle');
       };
       audio.onerror = () => {
-        URL.revokeObjectURL(url);
+        console.warn('Tutor voice could not be played. Check the voice route and production ElevenLabs key.');
         setVoiceState('quiet');
       };
       await audio.play();
@@ -349,8 +343,8 @@ export function AcademyGame() {
               <p>{activeChamber.motto}</p>
             </div>
             <button type="button" className="listen-button" onClick={hearTutor}>
-              {voiceState === 'loading' ? <Pause size={18} /> : <Volume2 size={18} />}
-              Hear Tutor
+              {voiceState === 'loading' || voiceState === 'speaking' ? <Pause size={18} /> : <Volume2 size={18} />}
+              {voiceLabel(voiceState)}
             </button>
           </div>
 
@@ -546,4 +540,11 @@ function rankFor(tier: number, xp: number) {
   if (tier >= 3) return 'Scholar Prince';
   if (xp > 900) return 'Household Steward';
   return 'Novice Regent';
+}
+
+function voiceLabel(state: 'idle' | 'loading' | 'speaking' | 'quiet') {
+  if (state === 'loading') return 'Calling Tutor';
+  if (state === 'speaking') return 'Tutor Speaking';
+  if (state === 'quiet') return 'Try Voice Again';
+  return 'Hear Tutor';
 }
