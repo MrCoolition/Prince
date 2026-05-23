@@ -56,6 +56,17 @@ create table if not exists progress (
   primary key (student_id, lesson_id)
 );
 
+create table if not exists formation_events (
+  id bigserial primary key,
+  prince_id text not null,
+  chamber_id text not null,
+  tier integer not null,
+  score integer not null,
+  relic text,
+  answer text,
+  created_at timestamptz not null default now()
+);
+
 insert into tutors (id, name, title, domain, room_name, room_description, room_image_url, tone, motto, color, accent, sigil, image_url, sort_order)
 values
   ('aurelius', 'Aurelius', 'Tutor of Noble Character', 'virtue', 'Great Hall', 'Judgment, kindness, service, and the first laws of noble conduct.', '/castle/great-hall.png', 'warm, steady, and fatherly', 'First rule the self, then serve the realm.', '#7b3f2f', '#f3c969', 'A', '/tutors/aurelius.png', 1),
