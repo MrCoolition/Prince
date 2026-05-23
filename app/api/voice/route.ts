@@ -53,8 +53,11 @@ async function voiceRequest(request: Request, readInput: () => Promise<{ text: u
 
     const apiKey = process.env.ELEVENLABS_API_KEY;
     const voiceId = voiceForTutor(tutorId);
-    if (!apiKey || !voiceId) {
-      return NextResponse.json({ error: 'Tutor voice is resting' }, { status: 412 });
+    if (!apiKey) {
+      return voiceError('missing-elevenlabs-api-key', 412);
+    }
+    if (!voiceId) {
+      return voiceError('missing-tutor-voice', 412);
     }
 
     const cacheKey = `${tutorId}:${voiceId}:${text}`;
@@ -85,7 +88,7 @@ async function voiceRequest(request: Request, readInput: () => Promise<{ text: u
 
     if (!response.ok) {
       console.warn('[voice] ElevenLabs request failed', { tutorId, status: response.status });
-      return NextResponse.json({ error: 'Tutor voice is resting' }, { status: 502 });
+      return voiceError('elevenlabs-rejected', 502, response.status);
     }
 
     const audio = await response.arrayBuffer();
@@ -94,6 +97,18 @@ async function voiceRequest(request: Request, readInput: () => Promise<{ text: u
   } catch (error) {
     return handleRouteError(error);
   }
+}
+
+function voiceError(code: string, status: number, upstreamStatus?: number) {
+  return NextResponse.json(
+    { error: 'Tutor voice is resting', code, upstreamStatus },
+    {
+      status,
+      headers: {
+        'cache-control': 'no-store'
+      }
+    }
+  );
 }
 
 function voiceForTutor(tutorId: string) {
