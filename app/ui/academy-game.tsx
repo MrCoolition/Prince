@@ -34,6 +34,7 @@ import {
   type ChamberId,
   type Trial
 } from '@/lib/academy';
+import { judgeTrialAnswer, type TutorReward } from '@/lib/tutor-judgment';
 
 type Progress = {
   tier: number;
@@ -45,17 +46,9 @@ type Progress = {
   log: string[];
 };
 
-type Reward = {
-  mastered: boolean;
-  score: number;
-  title: string;
-  line: string;
-  event: string;
-  relic: string;
-  next: string;
-};
+type Reward = TutorReward;
 
-const storageKey = 'prince-academy.next.progress.v1';
+const storageKey = 'prince-academy.next.progress.v2';
 
 const defaultProgress: Progress = {
   tier: 1,
@@ -73,6 +66,7 @@ export function AcademyGame() {
   const [answer, setAnswer] = useState('');
   const [chosen, setChosen] = useState<string[]>([]);
   const [reward, setReward] = useState<Reward | null>(null);
+  const [judging, setJudging] = useState(false);
   const [hint, setHint] = useState(doctrine.question);
   const [musicOn, setMusicOn] = useState(false);
   const [voiceState, setVoiceState] = useState<'idle' | 'loading' | 'speaking' | 'quiet'>('idle');
@@ -125,8 +119,24 @@ export function AcademyGame() {
     setAnswer((value) => value ? `${value} ${starter}` : starter);
   }
 
-  function submitTrial() {
-    const evaluation = evaluateTrial(trial, answer, chosen);
+  async function submitTrial() {
+    if (judging) {
+      return;
+    }
+
+    const localEvaluation = evaluateTrial(trial, answer, chosen);
+    setReward(localEvaluation);
+    setHint(localEvaluation.line);
+
+    if (!localEvaluation.mastered) {
+      return;
+    }
+
+    setJudging(true);
+    const mentorEvaluation = await refineWithMentor(trial, answer, chosen, localEvaluation);
+    setJudging(false);
+
+    const evaluation = mentorEvaluation ?? localEvaluation;
     setReward(evaluation);
     setHint(evaluation.line);
 
@@ -149,7 +159,6 @@ export function AcademyGame() {
       };
     });
 
-    void refineWithMentor(trial, answer, chosen, evaluation);
     void saveProgressEvent(evaluation);
   }
 
@@ -197,15 +206,12 @@ export function AcademyGame() {
         })
       });
       if (!response.ok) {
-        return;
+        return null;
       }
       const refined = await response.json() as Reward;
-      if (refined?.mastered && refined.line) {
-        setReward(refined);
-        setHint(refined.line);
-      }
+      return refined?.line ? refined : null;
     } catch {
-      // Local reward already carries the game loop.
+      return null;
     }
   }
 
@@ -397,9 +403,9 @@ export function AcademyGame() {
             </div>
 
             <div className="action-row">
-              <button type="button" className="primary" onClick={submitTrial} disabled={locked}>
+              <button type="button" className="primary" onClick={submitTrial} disabled={locked || judging}>
                 <Trophy size={19} />
-                Submit to the Tutor
+                {judging ? 'Tutor is Judging' : 'Submit to the Tutor'}
               </button>
               <p>{locked ? 'Earn the current seal to open this gate.' : trial.parentCue}</p>
             </div>
@@ -411,7 +417,7 @@ export function AcademyGame() {
                 <span>{reward.mastered ? `Reward earned - ${reward.title}` : 'Try together'}</span>
                 <p>{reward.line}</p>
                 <strong>{reward.event}</strong>
-                <small>Relic: {reward.relic}</small>
+                <small>{reward.mastered ? `Relic: ${reward.relic}` : reward.next}</small>
               </div>
               {reward.mastered ? (
                 <button type="button" onClick={continuePath}>
@@ -507,31 +513,7 @@ export function AcademyGame() {
 }
 
 function evaluateTrial(trial: Trial, answer: string, artifacts: string[]): Reward {
-  const words = answer.trim().split(/\s+/).filter(Boolean).length;
-  const score = Math.min(100, 54 + artifacts.length * 12 + Math.min(24, words * 4));
-  const mastered = score >= 66;
-
-  if (!mastered) {
-    return {
-      mastered,
-      score,
-      title: 'Guided Practice',
-      line: 'The tutor kneels beside the prince and offers two clear choices.',
-      event: 'Try one artifact card, then say one small answer.',
-      relic: 'Practice Spark',
-      next: 'Point, act, or use a starter phrase.'
-    };
-  }
-
-  return {
-    mastered,
-    score,
-    title: trial.virtue,
-    line: 'The chamber brightens. That is a real prince answer: small, clear, and noble.',
-    event: `The ${trial.relic} lights on the royal path.`,
-    relic: trial.relic,
-    next: 'Carry this virtue into the next chamber.'
-  };
+  return judgeTrialAnswer(trial, answer, artifacts);
 }
 
 function rankFor(tier: number, xp: number) {

@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
+import type { Trial } from '@/lib/academy';
 import { boundedText, fetchWithTimeout, handleRouteError, rateLimit } from '@/lib/server-security';
+import { judgeTrialAnswer } from '@/lib/tutor-judgment';
 
 export const runtime = 'nodejs';
 
@@ -11,14 +13,15 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json();
-    const fallback = normalizeReward(body.reward);
+    const answer = boundedText(body.answer, 'answer', 700, false);
+    const artifacts = Array.isArray(body.artifacts) ? body.artifacts.slice(0, 5).map(String) : [];
+    const fallback = judgeTrialAnswer(body.trial as Trial, answer, artifacts);
     const apiKey = process.env.OPENAI_API_KEY;
 
     if (!apiKey || process.env.OPENAI_COST_MODE !== 'premium') {
       return NextResponse.json(fallback);
     }
 
-    const answer = boundedText(body.answer, 'answer', 700, false);
     const model = process.env.OPENAI_CHEAP_MODEL || 'gpt-4o-mini';
     const response = await fetchWithTimeout('https://api.openai.com/v1/responses', {
       method: 'POST',
@@ -30,15 +33,18 @@ export async function POST(request: Request) {
         model,
         max_output_tokens: 220,
         instructions: [
-          'You are a wise royal tutor for a four-year-old prince.',
+          'You are a wise, deeply connected royal tutor for a four-year-old prince.',
           'Return compact JSON: mastered,score,title,line,event,relic,next.',
-          'Celebrate success first. Never shame. Make feedback concrete, noble, and playable.',
+          'You are not a prompt pile or a quiz grader. You are a steady teacher who guards the child, remembers the formation aim, and corrects with warmth.',
+          'Never grant mastery for profanity, cruelty, threats, humiliation, self-contempt, running away from the duty, or an answer that avoids the chamber question.',
+          'If the answer fails, mastered must be false. Give one concrete next move a parent can coach in ten seconds.',
+          'If the answer succeeds, celebrate specifically and connect it to virtue.',
           'Use the doctrine: a prince is raised to become worthy of power.'
         ].join(' '),
         input: JSON.stringify({
           trial: body.trial,
           answer,
-          artifacts: Array.isArray(body.artifacts) ? body.artifacts.slice(0, 5) : [],
+          artifacts,
           fallback
         })
       })
@@ -51,7 +57,11 @@ export async function POST(request: Request) {
     const data = await response.json();
     const text = data.output_text || extractOutputText(data);
     const parsed = JSON.parse(text);
-    return NextResponse.json(normalizeReward({ ...fallback, ...parsed }));
+    const refined = normalizeReward({ ...fallback, ...parsed });
+    if (!fallback.mastered && refined.mastered) {
+      return NextResponse.json(fallback);
+    }
+    return NextResponse.json(refined);
   } catch (error) {
     return handleRouteError(error);
   }
